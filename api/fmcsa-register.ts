@@ -11,6 +11,19 @@ function formatDateForFMCSA(date: Date): string {
   return `${day}-${month}-${year}`;
 }
 
+// Helper function to format date as MM/DD/YYYY
+function formatDateToMMDDYYYY(dateStr: string): string {
+  const [day, month, year] = dateStr.split('/');
+  return `${month}/${day}/20${year}`;
+}
+
+interface FMCSAEntry {
+  number: string;
+  title: string;
+  decided: string;
+  category: string;
+}
+
 export default async (req: VercelRequest, res: VercelResponse) => {
   // Enable CORS
   res.setHeader('Access-Control-Allow-Credentials', 'true');
@@ -39,6 +52,8 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     params.append('pd_date', registerDate);
     params.append('pv_vpath', 'LIVIEW');
 
+    console.log(`[FMCSA] Fetching register data for date: ${registerDate}`);
+
     const response = await axios.post(registerUrl, params.toString(), {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -60,51 +75,68 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     }
 
     const $ = cheerio.load(response.data);
-    const rawText = $.text();
-    const pattern = /((?:MC|FF|MX|MX-MC)-\d+)\s+([\s\S]*?)\s+(\d{2}\/\d{2}\/\d{4})/g;
     
-    const entries: Array<{ number: string; title: string; decided: string; category: string }> = [];
-    let match;
-    
-    const categoryKeywords: Record<string, string[]> = {
-      'NAME CHANGE': ['NAME CHANGES'],
-      'CERTIFICATE, PERMIT, LICENSE': ['CERTIFICATES, PERMITS & LICENSES'],
-      'CERTIFICATE OF REGISTRATION': ['CERTIFICATES OF REGISTRATION'],
-      'DISMISSAL': ['DISMISSALS'],
-      'WITHDRAWAL': ['WITHDRAWAL OF APPLICATION'],
-      'REVOCATION': ['REVOCATIONS'],
-      'TRANSFERS': ['TRANSFERS'],
-      'GRANT DECISION NOTICES': ['GRANT DECISION NOTICES']
+    // Category mapping with anchor names
+    const categories: Record<string, { label: string; anchor: string }> = {
+      'NC': { label: 'NAME CHANGE', anchor: 'NC' },
+      'CPL': { label: 'CERTIFICATE, PERMIT, LICENSE', anchor: 'CPL' },
+      'CX2': { label: 'CERTIFICATE OF REGISTRATION', anchor: 'CX2' },
+      'DIS': { label: 'DISMISSAL', anchor: 'DIS' },
+      'WDN': { label: 'WITHDRAWAL', anchor: 'WDN' },
+      'REV': { label: 'REVOCATION', anchor: 'REV' },
+      'TRN': { label: 'TRANSFERS', anchor: 'TRN' },
+      'GDN': { label: 'GRANT DECISION NOTICES', anchor: 'GDN' }
     };
 
-    while ((match = pattern.exec(rawText)) !== null) {
-      const docket = match[1];
-      const title = match[2].replace(/\s+/g, ' ').trim();
-      const decidedDate = match[3];
+    const entries: FMCSAEntry[] = [];
 
-      if (title.length > 500) continue;
-
-      const beforeIndex = match.index;
-      const contextText = rawText.substring(Math.max(0, beforeIndex - 1500), beforeIndex).toUpperCase();
-      
-      let category = 'MISCELLANEOUS';
-      for (const [catName, keywords] of Object.entries(categoryKeywords)) {
-        if (keywords.some(k => contextText.includes(k))) {
-          category = catName;
-        }
+    // Extract records using Sibling Logic for each category
+    for (const [key, { label, anchor }] of Object.entries(categories)) {
+      const startNode = $(`a[name="${anchor}"]`).first();
+      if (!startNode.length) {
+        console.log(`[FMCSA] Anchor not found for category: ${label}`);
+        continue;
       }
 
-      entries.push({
-        number: docket,
-        title,
-        decided: decidedDate,
-        category
+      const targetTable = startNode.next('table');
+      if (!targetTable.length) {
+        console.log(`[FMCSA] Table not found for category: ${label}`);
+        continue;
+      }
+
+      // Find all <th> tags with scope="row" (docket numbers)
+      const docketHeaders = targetTable.find('th[scope="row"]');
+      
+      docketHeaders.each((index, element) => {
+        const $th = $(element);
+        const docketNo = $th.text().trim();
+        
+        // Get the next two <td> siblings (Title and Date)
+        const $siblings = $th.nextAll('td');
+        if ($siblings.length >= 2) {
+          const title = $siblings.eq(0).text().trim();
+          const decided = $siblings.eq(1).text().trim();
+
+          if (docketNo && title && decided) {
+            entries.push({
+              number: docketNo,
+              title: title,
+              decided: decided,
+              category: label
+            });
+          }
+        }
       });
+
+      console.log(`[FMCSA] Extracted ${docketHeaders.length} records for category: ${label}`);
     }
 
+    // Remove duplicates
     const uniqueEntries = entries.filter((entry, index, self) =>
       index === self.findIndex((e) => e.number === entry.number && e.title === entry.title)
     );
+
+    console.log(`[FMCSA] Total unique entries: ${uniqueEntries.length}`);
 
     return res.status(200).json({
       success: true,
@@ -115,7 +147,7 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     });
 
   } catch (error: any) {
-    console.error('FMCSA Register scrape error:', error.message);
+    console.error('[FMCSA] Scrape error:', error.message);
     return res.status(500).json({
       success: false,
       error: 'Failed to scrape FMCSA register data',
