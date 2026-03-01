@@ -2,7 +2,7 @@ import { VercelRequest, VercelResponse } from '@vercel/node';
 import axios from 'axios';
 import * as cheerio from 'cheerio';
 
-// Helper to format date if none provided
+// Helper function to format date as DD-MMM-YY if user doesn't provide one
 function formatDateForFMCSA(date: Date): string {
   const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
   const day = String(date.getDate()).padStart(2, '0');
@@ -12,7 +12,7 @@ function formatDateForFMCSA(date: Date): string {
 }
 
 export default async (req: VercelRequest, res: VercelResponse) => {
-  // 1. CORS Headers
+  // 1. CORS Headers for Web App Safety
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,POST');
@@ -36,19 +36,19 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     params.append('pd_date', registerDate);
     params.append('pv_vpath', 'LIVIEW');
 
-    // 3. Fetch HTML
+    // 3. Fetch HTML with timeout safety
     const response = await axios.post(registerUrl, params.toString(), {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      timeout: 30000,
+      timeout: 30000, 
     });
 
     const $ = cheerio.load(response.data);
     const allEntries: any[] = [];
 
-    // 4. Map Categories to their HTML Anchor Names
+    // 4. Map Categories to their exact HTML Anchor Names
     const categories = [
       { name: 'NAME CHANGE', anchor: 'NC' },
       { name: 'CERTIFICATE, PERMIT, LICENSE', anchor: 'CPL' },
@@ -58,42 +58,60 @@ export default async (req: VercelRequest, res: VercelResponse) => {
       { name: 'REVOCATION', anchor: 'REV' }
     ];
 
-    // 5. Loop through each section
+    // 5. Loop through each section by Anchor
     categories.forEach((cat) => {
-      // Find the <a> tag with the name attribute (e.g., <a name="NC">)
       const sectionAnchor = $(`a[name="${cat.anchor}"]`);
       
       if (sectionAnchor.length > 0) {
-        // Find the table that follows this anchor
-        // FMCSA structure usually places the data in the very next table
+        // Find the table that follows this specific category anchor
         const targetTable = sectionAnchor.closest('table').nextAll('table').first();
 
-        // 6. FIX: Use Sibling Logic to bypass missing <tr> tags
-        // We find every <th> with scope="row" as the anchor for a record
+        // 6. FIX: Use "Sibling Logic" to capture records even with broken <tr> tags
         targetTable.find('th[scope="row"]').each((_, el) => {
-          const docket = $(el).text().trim();
+          const $el = $(el);
+          const docket = $el.text().trim();
           
-          // Get the next two <td> siblings (Title/Location and the Date)
-          const titleCell = $(el).next('td');
-          const dateCell = titleCell.next('td');
+          // The title is the first data cell sitting next to the docket number
+          const titleCell = $el.next('td');
+          
+          // IMPROVED DATE LOGIC:
+          // Look at all cells following the title to find the date (MM/DD/YYYY)
+          let dateVal = "";
+          const datePattern = /\d{2}\/\d{2}\/\d{4}/;
+
+          // Check the immediate sibling first
+          const immediateNext = titleCell.next('td').text().trim();
+          if (datePattern.test(immediateNext)) {
+            dateVal = immediateNext;
+          } else {
+            // If not found, scan all following cells in the sequence
+            $el.nextAll('td').each((_, td) => {
+              const text = $(td).text().trim();
+              if (datePattern.test(text)) {
+                dateVal = text;
+                return false; // Exit loop once date is found
+              }
+            });
+          }
 
           if (docket && titleCell.length > 0) {
             allEntries.push({
               number: docket,
               title: titleCell.text().replace(/\s+/g, ' ').trim(),
-              date: dateCell.text().trim(),
-              category: cat.name // Category is explicitly assigned here
+              decided: dateVal || "N/A", // This is your Decided Date field
+              category: cat.name
             });
           }
         });
       }
     });
 
-    // 7. Remove Duplicates (if any)
+    // 7. Data Clean-up
     const uniqueEntries = allEntries.filter((entry, index, self) =>
       index === self.findIndex((e) => e.number === entry.number && e.title === entry.title)
     );
 
+    // 8. Final JSON Response
     return res.status(200).json({
       success: true,
       count: uniqueEntries.length,
@@ -102,7 +120,7 @@ export default async (req: VercelRequest, res: VercelResponse) => {
     });
 
   } catch (error: any) {
-    console.error('Scrape Error:', error.message);
+    console.error('FMCSA Scrape error:', error.message);
     return res.status(500).json({
       success: false,
       error: 'Failed to scrape FMCSA data',
