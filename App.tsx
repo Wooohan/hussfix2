@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Sidebar } from './components/Sidebar';
 import { Dashboard } from './pages/Dashboard';
 import { Scraper } from './pages/Scraper';
@@ -25,9 +25,19 @@ const SettingsPage: React.FC = () => (
 );
 
 const App: React.FC = () => {
-  const [currentView, setCurrentView] = useState<ViewState>('dashboard');
-  const [user, setUser] = useState<User | null>(null);
+  // Initialize user from localStorage
+  const [user, setUser] = useState<User | null>(() => {
+    const saved = localStorage.getItem('hussfix_user');
+    return saved ? JSON.parse(saved) : null;
+  });
+  
+  const [currentView, setCurrentView] = useState<ViewState>(() => {
+    const saved = localStorage.getItem('hussfix_view');
+    return (saved as ViewState) || 'dashboard';
+  });
+  
   const [autoStartInsurance, setAutoStartInsurance] = useState(false);
+  const [cycleCarriers, setCycleCarriers] = useState<CarrierData[]>([]);
   const [allCarriers, setAllCarriers] = useState<CarrierData[]>([]);
   const [isLoadingCarriers, setIsLoadingCarriers] = useState(false);
 
@@ -59,6 +69,20 @@ const App: React.FC = () => {
     }
   };
 
+  // Persist user to localStorage whenever it changes
+  useEffect(() => {
+    if (user) {
+      localStorage.setItem('hussfix_user', JSON.stringify(user));
+    } else {
+      localStorage.removeItem('hussfix_user');
+    }
+  }, [user]);
+
+  // Persist current view to localStorage
+  useEffect(() => {
+    localStorage.setItem('hussfix_view', currentView);
+  }, [currentView]);
+
   const handleLogin = (userData: User) => {
     setUser(userData);
     setCurrentView(userData.role === 'admin' ? 'admin' : 'dashboard');
@@ -66,6 +90,8 @@ const App: React.FC = () => {
 
   const handleLogout = () => {
     setUser(null);
+    localStorage.removeItem('hussfix_user');
+    localStorage.removeItem('hussfix_view');
     setCurrentView('dashboard');
   };
 
@@ -84,6 +110,9 @@ const App: React.FC = () => {
   };
 
   const handleNewCarriers = (newData: CarrierData[]) => {
+    // Store the cycle carriers separately
+    setCycleCarriers(newData);
+    
     setAllCarriers(prev => {
       const existingMcs = new Set(prev.map(c => c.mcNumber));
       const filteredNew = newData.filter(c => !existingMcs.has(c.mcNumber));
@@ -147,7 +176,7 @@ const App: React.FC = () => {
       case 'insurance-scraper':
         return (
           <InsuranceScraper 
-            carriers={allCarriers} 
+            carriers={autoStartInsurance ? cycleCarriers : allCarriers} 
             onUpdateCarriers={handleUpdateCarriers} 
             autoStart={autoStartInsurance}
           />
@@ -163,9 +192,12 @@ const App: React.FC = () => {
     }
   };
 
+  // If no user in state but localStorage has one, user was restored from localStorage
   if (!user) {
-    return <Landing onLogin={handleLogin} />;
+    return <Landing onLogin={handleLogin} />
   }
+
+  // User is authenticated (either logged in or restored from localStorage)
 
   return (
     <div className="flex min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-indigo-500/30">
@@ -178,7 +210,7 @@ const App: React.FC = () => {
       
       <main className="flex-1 ml-64 relative bg-[url('https://grainy-gradients.vercel.app/noise.svg')] bg-opacity-20 h-screen overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-96 bg-indigo-600/10 blur-[100px] pointer-events-none rounded-full -translate-y-1/2"></div>
-        {renderContent()}
+        {user && renderContent()}
       </main>
     </div>
   );
