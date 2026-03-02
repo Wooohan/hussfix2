@@ -28,6 +28,12 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
   const [manualDot, setManualDot] = useState('');
   const [isManualLoading, setIsManualLoading] = useState(false);
   const [manualResult, setManualResult] = useState<{policies: InsurancePolicy[], safety?: any} | null>(null);
+  
+  // Manual MC Range State
+  const [mcRangeMode, setMcRangeMode] = useState(false);
+  const [mcRangeStart, setMcRangeStart] = useState('');
+  const [mcRangeEnd, setMcRangeEnd] = useState('');
+  const [mcRangeCarriers, setMcRangeCarriers] = useState<CarrierData[]>([]);
 
   const logsEndRef = useRef<HTMLDivElement>(null);
   const isRunningRef = useRef(false);
@@ -45,20 +51,67 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
     }
   }, [autoStart, carriers]);
 
+  const handleManualCheck = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualDot) return;
+    setIsManualLoading(true);
+    setManualResult(null);
+    try {
+      const { policies } = await fetchInsuranceData(manualDot);
+      const safety = await fetchSafetyData(manualDot);
+      setManualResult({ policies, safety });
+    } catch (error) {
+      console.error("Manual check failed", error);
+    } finally {
+      setIsManualLoading(false);
+    }
+  };
+
+  const handleMcRangeSearch = async () => {
+    if (!mcRangeStart || !mcRangeEnd) return;
+    
+    const start = parseInt(mcRangeStart);
+    const end = parseInt(mcRangeEnd);
+    
+    if (isNaN(start) || isNaN(end) || start > end) {
+      setLogs(prev => [...prev, `❌ Invalid MC range: ${mcRangeStart} to ${mcRangeEnd}. Start must be less than or equal to end.`]);
+      return;
+    }
+
+    setLogs(prev => [...prev, `🔍 Searching for carriers in MC range: ${start} to ${end}...`]);
+    
+    // Filter carriers from the database that fall within the MC range
+    const filtered = carriers.filter(c => {
+      const mc = parseInt(c.mcNumber);
+      return !isNaN(mc) && mc >= start && mc <= end;
+    });
+
+    setMcRangeCarriers(filtered);
+    setLogs(prev => [...prev, `✅ Found ${filtered.length} carriers in range ${start} to ${end}`]);
+    
+    if (filtered.length > 0) {
+      setLogs(prev => [...prev, `🚀 Ready to enrich ${filtered.length} carriers. Click 'Run Batch Enrichment' to start.`]);
+    }
+  };
+
   const startEnrichmentProcess = async () => {
     if (isProcessing) return;
-    if (carriers.length === 0) {
-      setLogs(prev => [...prev, "❌ Error: No carriers found in database. Load carriers first."]);
+    
+    // Use MC range carriers if in range mode, otherwise use all carriers
+    const carriersToProcess = mcRangeMode && mcRangeCarriers.length > 0 ? mcRangeCarriers : carriers;
+    
+    if (carriersToProcess.length === 0) {
+      setLogs(prev => [...prev, "❌ Error: No carriers found. Load carriers first or search for a valid MC range."]);
       return;
     }
 
     setIsProcessing(true);
     isRunningRef.current = true;
     setLogs(prev => [...prev, `🚀 ENGINE INITIALIZED: Automatic Multi-Stage Enrichment...`]);
-    setLogs(prev => [...prev, `🔍 Targeting: ${carriers.length} USDOT records`]);
+    setLogs(prev => [...prev, `🔍 Targeting: ${carriersToProcess.length} USDOT records`]);
     setLogs(prev => [...prev, `💾 Supabase sync: ENABLED`]);
     
-    const updatedCarriers = [...carriers];
+    const updatedCarriers = [...carriersToProcess];
     let dbSaved = 0;
 
     // --- STAGE 1: INSURANCE EXTRACTION ---
@@ -97,7 +150,7 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
       }
 
       setProgress(Math.round(((i + 1) / updatedCarriers.length) * 50));
-      setStats(prev => ({ ...prev, total: updatedCarriers.length, insFound, insFailed, dbSaved }));
+      setStats(prev => ({ ...prev, total: carriersToProcess.length, insFound, insFailed, dbSaved }));
       
       if ((i + 1) % 3 === 0 || (i + 1) === updatedCarriers.length) {
           onUpdateCarriers([...updatedCarriers]);
@@ -163,24 +216,9 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
     setLogs(prev => [...prev, `💾 Total Supabase updates: ${dbSaved}`]);
   };
 
-  const handleManualCheck = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!manualDot) return;
-    setIsManualLoading(true);
-    setManualResult(null);
-    try {
-      const { policies } = await fetchInsuranceData(manualDot);
-      const safety = await fetchSafetyData(manualDot);
-      setManualResult({ policies, safety });
-    } catch (error) {
-      console.error("Manual check failed", error);
-    } finally {
-      setIsManualLoading(false);
-    }
-  };
-
   const handleExport = () => {
-    const enrichedData = carriers.filter(c => (c.insurancePolicies && c.insurancePolicies.length > 0) || c.safetyRating);
+    const carriersToExport = mcRangeMode && mcRangeCarriers.length > 0 ? mcRangeCarriers : carriers;
+    const enrichedData = carriersToExport.filter(c => (c.insurancePolicies && c.insurancePolicies.length > 0) || c.safetyRating);
     if (enrichedData.length === 0) return;
     
     const headers = ["DOT", "Legal Name", "Safety Rating", "Rating Date", "OOS Rate", "Insurance Carrier", "Coverage", "Type"];
@@ -256,6 +294,63 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
                <span className="text-xs font-black uppercase tracking-widest">Currently Scraping: {currentStage}</span>
             </div>
           )}
+
+          {/* MC Range Mode Toggle */}
+          <div className="bg-slate-850 border border-slate-700/50 p-6 rounded-3xl shadow-xl">
+             <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                   <Database size={16} className="text-indigo-400" />
+                   MC Range Mode
+                </h3>
+                <button
+                  onClick={() => setMcRangeMode(!mcRangeMode)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                    mcRangeMode ? 'bg-indigo-600 text-white' : 'bg-slate-700 text-slate-400'
+                  }`}
+                >
+                  {mcRangeMode ? 'ON' : 'OFF'}
+                </button>
+             </div>
+             
+             {mcRangeMode && (
+               <div className="space-y-3 animate-in fade-in slide-in-from-top-2 duration-300">
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-500 uppercase mb-1">Start MC Number</label>
+                    <input
+                      type="text"
+                      value={mcRangeStart}
+                      onChange={(e) => setMcRangeStart(e.target.value)}
+                      placeholder="e.g. 1580000"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                      disabled={isProcessing}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-black text-slate-500 uppercase mb-1">End MC Number</label>
+                    <input
+                      type="text"
+                      value={mcRangeEnd}
+                      onChange={(e) => setMcRangeEnd(e.target.value)}
+                      placeholder="e.g. 1580050"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                      disabled={isProcessing}
+                    />
+                  </div>
+                  <button
+                    onClick={handleMcRangeSearch}
+                    disabled={!mcRangeStart || !mcRangeEnd || isProcessing}
+                    className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white rounded-lg px-3 py-2 text-sm font-bold transition-all"
+                  >
+                    Search Range
+                  </button>
+                  {mcRangeCarriers.length > 0 && (
+                    <div className="p-3 bg-slate-900/50 rounded-lg border border-slate-700/30">
+                      <p className="text-[10px] text-slate-400">Found <span className="text-indigo-400 font-bold">{mcRangeCarriers.length}</span> carriers</p>
+                    </div>
+                  )}
+               </div>
+             )}
+          </div>
 
           <div className="bg-slate-850 border border-slate-700/50 p-6 rounded-3xl shadow-xl">
              <h3 className="text-sm font-black text-slate-500 uppercase tracking-widest mb-6 flex items-center gap-3">
