@@ -74,7 +74,7 @@ export const FMCSARegister: React.FC = () => {
     }
   };
 
-  // Search button - fetch data from database by extracted_date
+  // Search button - fetch data from database by extracted_date.
   const handleSearch = async () => {
     setIsSearching(true);
     setError('');
