@@ -13,6 +13,37 @@ export interface FMCSARegisterEntry {
 }
 
 /**
+ * INTERNAL HELPER: Recursive fetch to bypass Supabase's 1000-row limit
+ */
+const fetchAllPages = async (baseQuery: any): Promise<any[]> => {
+  let allData: any[] = [];
+  let keepFetching = true;
+  let from = 0;
+  const step = 1000;
+
+  while (keepFetching) {
+    const { data, error } = await baseQuery.range(from, from + step - 1);
+
+    if (error) {
+      console.error('❌ Batch fetch error:', error);
+      throw error;
+    }
+
+    if (data && data.length > 0) {
+      allData = [...allData, ...data];
+      if (data.length < step) {
+        keepFetching = false;
+      } else {
+        from += step;
+      }
+    } else {
+      keepFetching = false;
+    }
+  }
+  return allData;
+};
+
+/**
  * Save FMCSA Register entries to Supabase with extracted_date
  */
 export const saveFMCSARegisterEntries = async (
@@ -26,10 +57,8 @@ export const saveFMCSARegisterEntries = async (
       return { success: true, count: 0 };
     }
 
-    // Use extractedDate if provided, otherwise use fetchDate
     const dateToUse = extractedDate || fetchDate;
 
-    // Prepare records for insertion
     const records = entries.map(entry => ({
       number: entry.number,
       title: entry.title,
@@ -41,10 +70,9 @@ export const saveFMCSARegisterEntries = async (
       updated_at: new Date().toISOString(),
     }));
 
-    console.log(`📝 Saving ${records.length} FMCSA Register entries for date: ${dateToUse}`);
+    console.log(`📝 Saving ${records.length} entries for date: ${dateToUse}`);
 
-    // Upsert to avoid duplicates
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('fmcsa_register')
       .upsert(records, { onConflict: 'number,extracted_date' });
 
@@ -53,7 +81,6 @@ export const saveFMCSARegisterEntries = async (
       return { success: false, error: `Database error: ${error.message}` };
     }
 
-    console.log(`✅ Successfully saved ${records.length} entries with extracted_date: ${dateToUse}`);
     return { success: true, count: records.length };
   } catch (err: any) {
     console.error('❌ Exception saving FMCSA entries:', err);
@@ -62,7 +89,7 @@ export const saveFMCSARegisterEntries = async (
 };
 
 /**
- * Fetch FMCSA Register entries by extracted_date (NO LIMIT)
+ * Fetch FMCSA Register entries by extracted_date (BYPASSES 1000 LIMIT)
  */
 export const fetchFMCSARegisterByExtractedDate = async (
   extractedDate: string,
@@ -72,38 +99,22 @@ export const fetchFMCSARegisterByExtractedDate = async (
   }
 ): Promise<FMCSARegisterEntry[]> => {
   try {
-    let query = supabase
-      .from('fmcsa_register')
-      .select('*');
+    let query = supabase.from('fmcsa_register').select('*').eq('extracted_date', extractedDate);
 
-    // Filter by extracted_date
-    query = query.eq('extracted_date', extractedDate);
-
-    // Apply optional filters
     if (filters?.category && filters.category !== 'all') {
       query = query.eq('category', filters.category);
     }
 
     if (filters?.searchTerm) {
       const searchPattern = `%${filters.searchTerm}%`;
-      query = query.or(
-        `number.ilike.${searchPattern},title.ilike.${searchPattern}`
-      );
+      query = query.or(`number.ilike.${searchPattern},title.ilike.${searchPattern}`);
     }
 
-    // Order by number
     query = query.order('number', { ascending: true });
 
-    // NO LIMIT - fetch all records for this date
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('❌ Supabase fetch error:', error);
-      return [];
-    }
-
-    console.log(`✅ Fetched ${(data || []).length} FMCSA Register entries for date: ${extractedDate}`);
-    return (data || []) as FMCSARegisterEntry[];
+    const data = await fetchAllPages(query);
+    console.log(`✅ Total retrieved for ${extractedDate}: ${data.length} records`);
+    return data as FMCSARegisterEntry[];
   } catch (err) {
     console.error('❌ Exception fetching from Supabase:', err);
     return [];
@@ -111,7 +122,7 @@ export const fetchFMCSARegisterByExtractedDate = async (
 };
 
 /**
- * Fetch FMCSA Register entries from Supabase with filters (legacy - with limit)
+ * Fetch FMCSA Register entries from Supabase with filters (Legacy/Range Support)
  */
 export const fetchFMCSARegisterEntries = async (filters?: {
   category?: string;
@@ -121,53 +132,30 @@ export const fetchFMCSARegisterEntries = async (filters?: {
   limit?: number;
 }): Promise<FMCSARegisterEntry[]> => {
   try {
-    let query = supabase
-      .from('fmcsa_register')
-      .select('*');
+    let query = supabase.from('fmcsa_register').select('*');
 
-    // Apply filters
     if (filters?.category && filters.category !== 'all') {
       query = query.eq('category', filters.category);
     }
-
-    if (filters?.dateFrom) {
-      query = query.gte('extracted_date', filters.dateFrom);
-    }
-
-    if (filters?.dateTo) {
-      query = query.lte('extracted_date', filters.dateTo);
-    }
+    if (filters?.dateFrom) query = query.gte('extracted_date', filters.dateFrom);
+    if (filters?.dateTo) query = query.lte('extracted_date', filters.dateTo);
 
     if (filters?.searchTerm) {
       const searchPattern = `%${filters.searchTerm}%`;
-      query = query.or(
-        `number.ilike.${searchPattern},title.ilike.${searchPattern}`
-      );
+      query = query.or(`number.ilike.${searchPattern},title.ilike.${searchPattern}`);
     }
 
-    // Order by date and number
-    query = query
-      .order('extracted_date', { ascending: false })
-      .order('number', { ascending: true });
+    query = query.order('extracted_date', { ascending: false }).order('number', { ascending: true });
 
-    // Apply limit
     if (filters?.limit) {
-      query = query.limit(filters.limit);
-    } else {
-      query = query.limit(500); // Default limit for backward compatibility
+      const { data } = await query.limit(filters.limit);
+      return (data || []) as FMCSARegisterEntry[];
     }
 
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('❌ Supabase fetch error:', error);
-      return [];
-    }
-
-    console.log(`✅ Fetched ${(data || []).length} FMCSA Register entries`);
-    return (data || []) as FMCSARegisterEntry[];
+    const data = await fetchAllPages(query);
+    return data as FMCSARegisterEntry[];
   } catch (err) {
-    console.error('❌ Exception fetching from Supabase:', err);
+    console.error('❌ Exception fetching entries:', err);
     return [];
   }
 };
@@ -177,21 +165,11 @@ export const fetchFMCSARegisterEntries = async (filters?: {
  */
 export const getFMCSAEntriesByDate = async (date: string): Promise<FMCSARegisterEntry[]> => {
   try {
-    const { data, error } = await supabase
-      .from('fmcsa_register')
-      .select('*')
-      .eq('extracted_date', date)
-      .order('number', { ascending: true });
-
-    if (error) {
-      console.error('❌ Supabase fetch error:', error);
-      return [];
-    }
-
-    console.log(`✅ Fetched ${(data || []).length} entries for date: ${date}`);
-    return (data || []) as FMCSARegisterEntry[];
+    const query = supabase.from('fmcsa_register').select('*').eq('extracted_date', date).order('number', { ascending: true });
+    const data = await fetchAllPages(query);
+    return data as FMCSARegisterEntry[];
   } catch (err) {
-    console.error('❌ Exception fetching entries by date:', err);
+    console.error('❌ Exception fetching by date:', err);
     return [];
   }
 };
@@ -201,22 +179,13 @@ export const getFMCSAEntriesByDate = async (date: string): Promise<FMCSARegister
  */
 export const getFMCSACategories = async (): Promise<string[]> => {
   try {
-    const { data, error } = await supabase
-      .from('fmcsa_register')
-      .select('category')
-      .neq('category', null);
-
-    if (error) {
-      console.error('❌ Supabase fetch error:', error);
-      return [];
-    }
-
-    // Extract unique categories
+    // Note: To bypass 1000 limit here, we fetch just the category column
+    const query = supabase.from('fmcsa_register').select('category').neq('category', null);
+    const data = await fetchAllPages(query);
+    
     const categories = new Set<string>();
-    (data || []).forEach((record: any) => {
-      if (record.category) {
-        categories.add(record.category);
-      }
+    data.forEach((record: any) => {
+      if (record.category) categories.add(record.category);
     });
 
     return Array.from(categories).sort();
@@ -239,45 +208,25 @@ export const getFMCSAStatistics = async (
 }> => {
   try {
     let query = supabase.from('fmcsa_register').select('*');
+    if (dateFrom) query = query.gte('extracted_date', dateFrom);
+    if (dateTo) query = query.lte('extracted_date', dateTo);
 
-    if (dateFrom) {
-      query = query.gte('extracted_date', dateFrom);
-    }
+    const data = await fetchAllPages(query);
 
-    if (dateTo) {
-      query = query.lte('extracted_date', dateTo);
-    }
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('❌ Supabase fetch error:', error);
-      return {
-        totalEntries: 0,
-        byCategory: {},
-        dateRange: { from: dateFrom || '', to: dateTo || '' },
-      };
-    }
-
-    // Calculate statistics
     const byCategory: Record<string, number> = {};
-    (data || []).forEach((entry: any) => {
+    data.forEach((entry: any) => {
       const cat = entry.category || 'UNCATEGORIZED';
       byCategory[cat] = (byCategory[cat] || 0) + 1;
     });
 
     return {
-      totalEntries: data?.length || 0,
+      totalEntries: data.length,
       byCategory,
       dateRange: { from: dateFrom || '', to: dateTo || '' },
     };
   } catch (err) {
     console.error('❌ Exception fetching statistics:', err);
-    return {
-      totalEntries: 0,
-      byCategory: {},
-      dateRange: { from: dateFrom || '', to: dateTo || '' },
-    };
+    return { totalEntries: 0, byCategory: {}, dateRange: { from: dateFrom || '', to: dateTo || '' } };
   }
 };
 
@@ -286,23 +235,12 @@ export const getFMCSAStatistics = async (
  */
 export const getExtractedDates = async (): Promise<string[]> => {
   try {
-    const { data, error } = await supabase
-      .from('fmcsa_register')
-      .select('extracted_date')
-      .neq('extracted_date', null)
-      .order('extracted_date', { ascending: false });
+    const query = supabase.from('fmcsa_register').select('extracted_date').neq('extracted_date', null).order('extracted_date', { ascending: false });
+    const data = await fetchAllPages(query);
 
-    if (error) {
-      console.error('❌ Supabase fetch error:', error);
-      return [];
-    }
-
-    // Extract unique dates
     const dates = new Set<string>();
-    (data || []).forEach((record: any) => {
-      if (record.extracted_date) {
-        dates.add(record.extracted_date);
-      }
+    data.forEach((record: any) => {
+      if (record.extracted_date) dates.add(record.extracted_date);
     });
 
     return Array.from(dates).sort().reverse();
@@ -317,19 +255,15 @@ export const getExtractedDates = async (): Promise<string[]> => {
  */
 export const deleteFMCSAEntriesBeforeDate = async (date: string): Promise<{ success: boolean; error?: string; deleted?: number }> => {
   try {
-    const { data, error } = await supabase
+    // Delete doesn't return data by default in newer Supabase versions without .select()
+    const { error, count } = await supabase
       .from('fmcsa_register')
-      .delete()
+      .delete({ count: 'exact' })
       .lt('extracted_date', date);
 
-    if (error) {
-      console.error('❌ Supabase delete error:', error);
-      return { success: false, error: error.message };
-    }
+    if (error) throw error;
 
-    const deletedCount = (data || []).length;
-    console.log(`✅ Deleted ${deletedCount} old entries`);
-    return { success: true, deleted: deletedCount };
+    return { success: true, deleted: count || 0 };
   } catch (err: any) {
     console.error('❌ Exception deleting entries:', err);
     return { success: false, error: err.message };
@@ -345,20 +279,13 @@ export const checkFMCSARegisterTable = async (): Promise<{
   error?: string;
 }> => {
   try {
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('fmcsa_register')
       .select('*', { count: 'exact', head: true });
 
     if (error) {
-      if (error.message.includes('does not exist')) {
-        return {
-          exists: false,
-          accessible: false,
-          error: 'fmcsa_register table does not exist',
-        };
-      }
       return {
-        exists: false,
+        exists: !error.message.includes('does not exist'),
         accessible: false,
         error: error.message,
       };
@@ -366,10 +293,6 @@ export const checkFMCSARegisterTable = async (): Promise<{
 
     return { exists: true, accessible: true };
   } catch (err: any) {
-    return {
-      exists: false,
-      accessible: false,
-      error: err.message,
-    };
+    return { exists: false, accessible: false, error: err.message };
   }
 };
