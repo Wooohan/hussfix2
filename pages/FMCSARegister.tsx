@@ -1,12 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { FileText, RefreshCw, Calendar, Search, Filter, ChevronDown, ExternalLink, AlertCircle, X, Database, CheckCircle2, TrendingUp, BarChart3 } from 'lucide-react';
-import { saveFMCSARegisterEntries, fetchFMCSARegisterEntries } from '../services/fmcsaRegisterService';
+import { saveFMCSARegisterEntries, fetchFMCSARegisterByExtractedDate, getExtractedDates } from '../services/fmcsaRegisterService';
 
 interface FMCSARegisterEntry {
   number: string;
   title: string;
   decided: string;
   category: string;
+  extracted_date?: string;
 }
 
 export const FMCSARegister: React.FC = () => {
@@ -19,6 +20,8 @@ export const FMCSARegister: React.FC = () => {
   const [error, setError] = useState<string>('');
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [categoryStats, setCategoryStats] = useState<Record<string, number>>({});
+  const [availableDates, setAvailableDates] = useState<string[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
 
   const categories = [
     'NAME CHANGE',
@@ -48,9 +51,9 @@ export const FMCSARegister: React.FC = () => {
     return `${day}-${month}-${year}`;
   }
 
-  // Initial load only from Supabase, NO automatic live fetch
+  // Load available dates on component mount
   useEffect(() => {
-    loadFromSupabase();
+    loadAvailableDates();
   }, []);
 
   // Calculate category statistics
@@ -62,37 +65,42 @@ export const FMCSARegister: React.FC = () => {
     setCategoryStats(stats);
   }, [registerData]);
 
-  const loadFromSupabase = async (dateOverride?: string) => {
-    setIsLoading(true);
+  const loadAvailableDates = async () => {
+    try {
+      const dates = await getExtractedDates();
+      setAvailableDates(dates);
+    } catch (err) {
+      console.error('Error loading available dates:', err);
+    }
+  };
+
+  // Search button - fetch data from database by extracted_date
+  const handleSearch = async () => {
+    setIsSearching(true);
     setError('');
-    const dateToUse = dateOverride || selectedDate;
     
     try {
-      const data = await fetchFMCSARegisterEntries({
-        dateFrom: dateToUse,
-        dateTo: dateToUse
+      console.log(`🔍 Searching for data with extracted_date: ${selectedDate}`);
+      
+      const data = await fetchFMCSARegisterByExtractedDate(selectedDate, {
+        category: selectedCategory !== 'all' ? selectedCategory : undefined,
+        searchTerm: searchTerm || undefined
       });
       
       if (data && data.length > 0) {
-        setRegisterData(data.map(d => ({
-          number: d.number,
-          title: d.title,
-          decided: d.decided,
-          category: d.category
-        })));
-        setLastUpdated(`Loaded from DB: ${new Date().toLocaleTimeString()}`);
+        setRegisterData(data);
+        setLastUpdated(`✅ Loaded ${data.length} records from database for ${selectedDate}`);
+        console.log(`✅ Successfully loaded ${data.length} records`);
       } else {
         setRegisterData([]);
         setLastUpdated('');
-        if (dateOverride) {
-           setError('No data found in database for this date. Click "Fetch Live" to scrape from FMCSA.');
-        }
+        setError(`No data found in database for date: ${selectedDate}. Click "Fetch Live" to scrape from FMCSA.`);
       }
     } catch (err) {
-      console.error('Supabase load error:', err);
-      setError('Error loading from database.');
+      console.error('Search error:', err);
+      setError('Error searching database.');
     } finally {
-      setIsLoading(false);
+      setIsSearching(false);
     }
   };
 
@@ -106,6 +114,8 @@ export const FMCSARegister: React.FC = () => {
       // Smart detection for Local vs Production
       const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
       const apiUrl = isLocal ? 'http://localhost:3001/api/fmcsa-register' : '/api/fmcsa-register';
+      
+      console.log(`🚀 Fetching live FMCSA data for: ${formattedDate}`);
       
       const response = await fetch(apiUrl, {
         method: 'POST',
@@ -128,8 +138,11 @@ export const FMCSARegister: React.FC = () => {
         setRegisterData(data.entries);
         setLastUpdated(`Live: ${new Date().toLocaleTimeString()} (${data.count} records)`);
         
-        // Auto-save to Supabase
+        // Auto-save to Supabase with extracted_date
         saveToSupabase(data.entries, selectedDate);
+        
+        // Reload available dates
+        loadAvailableDates();
       } else {
         throw new Error('No entries found on FMCSA for this date.');
       }
@@ -141,13 +154,17 @@ export const FMCSARegister: React.FC = () => {
     }
   };
 
-  const saveToSupabase = async (entries: FMCSARegisterEntry[], fetchDate: string) => {
+  const saveToSupabase = async (entries: FMCSARegisterEntry[], extractedDate: string) => {
     setSaveStatus('saving');
     try {
+      console.log(`💾 Saving ${entries.length} entries with extracted_date: ${extractedDate}`);
+      
       const result = await saveFMCSARegisterEntries(
-        entries.map(e => ({ ...e, date_fetched: fetchDate })),
-        fetchDate
+        entries.map(e => ({ ...e, extracted_date: extractedDate })),
+        extractedDate,
+        extractedDate
       );
+      
       if (result.success) {
         setSaveStatus('saved');
         setTimeout(() => setSaveStatus('idle'), 3000);
@@ -155,6 +172,7 @@ export const FMCSARegister: React.FC = () => {
         setSaveStatus('error');
       }
     } catch (err) {
+      console.error('Save error:', err);
       setSaveStatus('error');
     }
   };
@@ -250,11 +268,11 @@ export const FMCSARegister: React.FC = () => {
                 <p className="text-slate-400 text-xs uppercase tracking-wider font-semibold">Top Category</p>
                 <p className="text-lg font-bold text-white mt-1">
                   {Object.entries(categoryStats).length > 0 
-                    ? Object.entries(categoryStats).sort((a, b) => b[1] - a[1])[0][0].split(' ')[0] 
+                    ? Object.entries(categoryStats).sort(([,a], [,b]) => b - a)[0][0]
                     : 'N/A'}
                 </p>
               </div>
-              <FileText className="text-purple-500 opacity-20" size={32} />
+              <Filter className="text-purple-500 opacity-20" size={32} />
             </div>
           </div>
           <div className="bg-gradient-to-br from-slate-800/40 to-slate-900/40 border border-slate-700/50 rounded-lg p-4 backdrop-blur-sm">
@@ -263,190 +281,135 @@ export const FMCSARegister: React.FC = () => {
                 <p className="text-slate-400 text-xs uppercase tracking-wider font-semibold">Filtered</p>
                 <p className="text-2xl font-bold text-white mt-1">{filteredData.length}</p>
               </div>
-              <Filter className="text-orange-500 opacity-20" size={32} />
+              <Search className="text-orange-500 opacity-20" size={32} />
             </div>
           </div>
         </div>
       )}
 
-      {/* Filters Row - Enhanced Dark Styling */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 bg-slate-900/50 p-4 rounded-xl border border-slate-800/60 backdrop-blur-sm">
-        {/* Date Picker */}
-        <div className="relative group">
-          <label className="absolute -top-2 left-3 px-1 bg-slate-950 text-[10px] text-slate-500 uppercase tracking-wider font-bold group-focus-within:text-indigo-400 transition-colors">Date</label>
-          <div className="flex items-center bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2.5 focus-within:border-indigo-500/50 focus-within:bg-slate-950 transition-all">
-            <Calendar size={16} className="text-slate-500 mr-2" />
+      {/* Controls Section */}
+      <div className="bg-gradient-to-br from-slate-800/40 to-slate-900/40 border border-slate-700/50 rounded-lg p-4 backdrop-blur-sm mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          {/* Date Picker */}
+          <div>
+            <label className="block text-xs uppercase tracking-wider font-semibold text-slate-400 mb-2">Date</label>
             <input
               type="date"
               value={selectedDate}
-              onChange={(e) => {
-                setSelectedDate(e.target.value);
-                loadFromSupabase(e.target.value);
-              }}
-              className="bg-transparent border-none text-sm text-slate-200 focus:outline-none w-full [color-scheme:dark]"
+              onChange={(e) => setSelectedDate(e.target.value)}
+              className="w-full px-3 py-2 bg-slate-900/50 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:border-indigo-500/50"
             />
+            {availableDates.length > 0 && (
+              <p className="text-xs text-slate-500 mt-1">
+                Available: {availableDates.length} dates
+              </p>
+            )}
           </div>
-        </div>
 
-        {/* Category Filter */}
-        <div className="relative group">
-          <label className="absolute -top-2 left-3 px-1 bg-slate-950 text-[10px] text-slate-500 uppercase tracking-wider font-bold group-focus-within:text-indigo-400 transition-colors">Category</label>
-          <div className="flex items-center bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2.5 focus-within:border-indigo-500/50 focus-within:bg-slate-950 transition-all">
-            <Filter size={16} className="text-slate-500 mr-2" />
+          {/* Category Filter */}
+          <div>
+            <label className="block text-xs uppercase tracking-wider font-semibold text-slate-400 mb-2">Category</label>
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="bg-transparent border-none text-sm text-slate-200 focus:outline-none w-full appearance-none cursor-pointer"
+              className="w-full px-3 py-2 bg-slate-900/50 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:border-indigo-500/50"
             >
-              <option value="all" className="bg-slate-900">All Categories</option>
+              <option value="all">All Categories</option>
               {categories.map(cat => (
-                <option key={cat} value={cat} className="bg-slate-900">{cat}</option>
+                <option key={cat} value={cat}>{cat}</option>
               ))}
             </select>
-            <ChevronDown size={14} className="text-slate-500 pointer-events-none ml-1" />
           </div>
-        </div>
 
-        {/* Search */}
-        <div className="relative md:col-span-2 group">
-          <label className="absolute -top-2 left-3 px-1 bg-slate-950 text-[10px] text-slate-500 uppercase tracking-wider font-bold group-focus-within:text-indigo-400 transition-colors">Search</label>
-          <div className="flex items-center bg-slate-950/80 border border-slate-800 rounded-lg px-3 py-2.5 focus-within:border-indigo-500/50 focus-within:bg-slate-950 transition-all">
-            <Search size={16} className="text-slate-500 mr-2" />
+          {/* Search Term */}
+          <div>
+            <label className="block text-xs uppercase tracking-wider font-semibold text-slate-400 mb-2">Search</label>
             <input
               type="text"
-              placeholder="Search by MC number or carrier name..."
+              placeholder="Search by number or title..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="bg-transparent border-none text-sm text-slate-200 focus:outline-none w-full placeholder:text-slate-600"
+              className="w-full px-3 py-2 bg-slate-900/50 border border-slate-600/50 rounded-lg text-white text-sm focus:outline-none focus:border-indigo-500/50 placeholder-slate-500"
             />
-            {searchTerm && (
-              <button onClick={() => setSearchTerm('')} className="text-slate-500 hover:text-white transition-colors">
-                <X size={14} />
-              </button>
-            )}
+          </div>
+
+          {/* Search Button */}
+          <div className="flex items-end">
+            <button
+              onClick={handleSearch}
+              disabled={isSearching}
+              className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-500 hover:to-green-600 text-white rounded-lg text-sm font-semibold transition-all shadow-lg shadow-green-900/30 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Search size={16} className={isSearching ? 'animate-spin' : ''} />
+              {isSearching ? 'Searching...' : 'Search'}
+            </button>
           </div>
         </div>
       </div>
 
-      {/* Main Content Area */}
-      <div className="flex-1 bg-slate-900/30 border border-slate-800/60 rounded-xl overflow-hidden flex flex-col shadow-inner">
-        {/* Table Header / Stats */}
-        <div className="px-6 py-4 border-b border-slate-800/60 bg-slate-900/50 flex justify-between items-center backdrop-blur-sm">
-          <div className="flex items-center gap-4">
-            <span className="text-sm font-semibold text-slate-300">
-              Showing <span className="text-white font-bold">{filteredData.length}</span> of <span className="text-white font-bold">{registerData.length}</span> entries
-            </span>
-            {lastUpdated && (
-              <span className="text-xs text-slate-500 font-mono flex items-center gap-1.5">
-                <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
-                {lastUpdated}
-              </span>
-            )}
-          </div>
-          <a
-            href="https://li-public.fmcsa.dot.gov/LIVIEW/pkg_menu.prc_menu"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors flex items-center gap-1.5 font-semibold uppercase tracking-tight"
-          >
-            FMCSA Official Source <ExternalLink size={12} />
-          </a>
+      {/* Status Message */}
+      {lastUpdated && (
+        <div className="mb-4 p-3 bg-green-500/10 border border-green-500/30 rounded-lg text-green-400 text-sm flex items-center gap-2">
+          <CheckCircle2 size={16} />
+          {lastUpdated}
         </div>
+      )}
 
-        {/* Table Body */}
-        <div className="flex-1 overflow-auto custom-scrollbar">
-          {error && (
-            <div className="p-12 text-center">
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-full bg-red-500/10 mb-4 border border-red-500/20">
-                <AlertCircle className="text-red-500" size={32} />
-              </div>
-              <h3 className="text-white font-bold mb-2 text-lg">Notice</h3>
-              <p className="text-slate-400 text-sm max-w-md mx-auto leading-relaxed">{error}</p>
-              {!registerData.length && (
-                <button 
-                  onClick={fetchRegisterData}
-                  className="mt-6 px-6 py-2 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-400 rounded-full text-xs font-bold transition-all border border-indigo-500/30"
-                >
-                  Fetch Live Data Now
-                </button>
-              )}
-            </div>
-          )}
+      {/* Error Message */}
+      {error && (
+        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-sm flex items-center gap-2">
+          <AlertCircle size={16} />
+          {error}
+        </div>
+      )}
 
-          {!error && isLoading && (
-            <div className="flex flex-col items-center justify-center h-64">
-              <div className="w-12 h-12 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin mb-4"></div>
-              <p className="text-slate-400 text-sm font-medium animate-pulse">Extracting FMCSA records...</p>
-            </div>
-          )}
-
-          {!error && !isLoading && filteredData.length === 0 && !lastUpdated && (
-            <div className="flex flex-col items-center justify-center h-64 text-slate-500">
-              <div className="w-20 h-20 bg-slate-800/40 rounded-full flex items-center justify-center mb-4 border border-slate-700/50">
-                <FileText size={40} className="opacity-20" />
-              </div>
-              <p className="font-semibold text-base">No data loaded for this date</p>
-              <p className="text-xs mt-2 text-slate-600">Click the "Fetch Live" button to scrape today's register</p>
-            </div>
-          )}
-
-          {!error && !isLoading && filteredData.length === 0 && lastUpdated && (
-            <div className="flex flex-col items-center justify-center h-64 text-slate-500">
-              <Search size={48} className="mb-4 opacity-10" />
-              <p className="font-semibold">No records match your filters</p>
-            </div>
-          )}
-
-          {!error && !isLoading && filteredData.length > 0 && (
-            <table className="w-full text-left border-collapse">
-              <thead className="sticky top-0 bg-slate-900/95 backdrop-blur-md text-slate-500 text-xs uppercase tracking-widest font-black border-b border-slate-800/60">
+      {/* Data Table */}
+      <div className="flex-1 overflow-hidden rounded-lg border border-slate-700/50 bg-slate-900/20 backdrop-blur-sm">
+        {filteredData.length > 0 ? (
+          <div className="h-full overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="sticky top-0 bg-slate-900/80 border-b border-slate-700/50">
                 <tr>
-                  <th className="px-6 py-4">Docket #</th>
-                  <th className="px-6 py-4">Carrier / Legal Name</th>
-                  <th className="px-6 py-4">Category</th>
-                  <th className="px-6 py-4">Decided</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-300">Number</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-300">Title</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-300">Category</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-300">Decided</th>
+                  <th className="px-4 py-3 text-left font-semibold text-slate-300">Extracted Date</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/40">
+              <tbody>
                 {filteredData.map((entry, idx) => (
-                  <tr key={idx} className="hover:bg-indigo-500/5 transition-all group cursor-default border-b border-slate-800/30">
-                    <td className="px-6 py-4 text-sm font-mono text-indigo-400 font-bold group-hover:text-indigo-300 whitespace-nowrap">{entry.number}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300 group-hover:text-white transition-colors leading-snug">{entry.title}</td>
-                    <td className="px-6 py-4">
-                      <span className={`px-3 py-1.5 rounded-full text-xs font-bold border inline-block ${getCategoryColor(entry.category)} shadow-sm`}>
+                  <tr key={idx} className="border-b border-slate-700/30 hover:bg-slate-800/30 transition-colors">
+                    <td className="px-4 py-3 font-mono text-indigo-400">{entry.number}</td>
+                    <td className="px-4 py-3 text-slate-300">{entry.title}</td>
+                    <td className="px-4 py-3">
+                      <span className={`inline-block px-2 py-1 rounded text-xs font-semibold border ${getCategoryColor(entry.category)}`}>
                         {entry.category}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-xs text-slate-500 font-mono font-medium whitespace-nowrap">{entry.decided}</td>
+                    <td className="px-4 py-3 text-slate-400">{entry.decided}</td>
+                    <td className="px-4 py-3 text-slate-400">{entry.extracted_date || 'N/A'}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          )}
-        </div>
+          </div>
+        ) : (
+          <div className="h-full flex items-center justify-center">
+            <div className="text-center">
+              <AlertCircle className="mx-auto mb-3 text-slate-500" size={40} />
+              <p className="text-slate-400">No data found</p>
+              <p className="text-slate-500 text-sm mt-1">
+                {registerData.length === 0 
+                  ? 'Select a date and click "Search" to load data from database'
+                  : 'No results match your filters'}
+              </p>
+            </div>
+          </div>
+        )}
       </div>
-      
-      {/* CSS for custom scrollbar */}
-      <style>{`
-        .custom-scrollbar::-webkit-scrollbar {
-          width: 10px;
-        }
-        .custom-scrollbar::-webkit-scrollbar-track {
-          background: rgba(15, 23, 42, 0.3);
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: linear-gradient(180deg, #4f46e5 0%, #6366f1 100%);
-          border-radius: 20px;
-          border: 2px solid #0f172a;
-        }
-        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: linear-gradient(180deg, #6366f1 0%, #818cf8 100%);
-        }
-        select option {
-          background-color: #0f172a;
-          color: #e2e8f0;
-        }
-      `}</style>
     </div>
   );
 };
+
+export default FMCSARegister;
