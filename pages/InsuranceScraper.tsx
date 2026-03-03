@@ -37,7 +37,7 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
 
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  // --- NETWORK SPEED MONITOR ---
+  // --- NETWORK SPEED MONITOR ---.
   const measureSpeed = (startTime: number, dataSize: number) => {
     const endTime = Date.now();
     const durationSeconds = (endTime - startTime) / 1000;
