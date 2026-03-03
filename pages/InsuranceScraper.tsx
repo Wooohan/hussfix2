@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Download, Database, SearchIcon, ClipboardList, Loader2, Play, Zap, ShieldAlert, CheckCircle2, RotateCcw } from 'lucide-react';
-import { CarrierData, InsurancePolicy } from '../types';
+import { Download, Database, ClipboardList, Loader2, Zap, CheckCircle2, RotateCcw, ShieldCheck, Activity } from 'lucide-react';
+import { CarrierData } from '../types';
 import { fetchInsuranceData, fetchSafetyData } from '../services/mockService';
 import { updateCarrierInsurance, updateCarrierSafety, supabase } from '../services/supabaseClient';
 
@@ -12,15 +12,12 @@ interface InsuranceScraperProps {
 
 export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, onUpdateCarriers, autoStart }) => {
   const [isProcessing, setIsProcessing] = useState(false);
-  const [currentStage, setCurrentStage] = useState<'IDLE' | 'INSURANCE' | 'SAFETY'>('IDLE');
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState(0);
   const [stats, setStats] = useState({ 
     total: 0, 
     insFound: 0, 
-    insFailed: 0,
     safetyFound: 0,
-    safetyFailed: 0,
     dbSaved: 0,
     retries: 0
   });
@@ -37,30 +34,22 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
     logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
-  // Helper: Sleep function for staggering and backoff
   const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-  // --- RETRY LOGIC ENGINE ---
-  const fetchSafetyWithRetry = async (dot: string, maxRetries = 3): Promise<any> => {
-    let lastError;
+  // Specialized Retry Logic for Safety N/A
+  const fetchSafetyWithRetry = async (dot: string, maxRetries = 2): Promise<any> => {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       try {
         const data = await fetchSafetyData(dot);
-        // If we got a real rating or real BASIC scores, return it
         if (data && data.rating !== 'N/A') return data;
-        
-        // If it's N/A but we have retries left, wait and try again
         if (attempt < maxRetries) {
-          const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s backoff
-          setLogs(prev => [...prev, `🔄 [RETRY] DOT ${dot} returned N/A. Attempt ${attempt + 1}/${maxRetries} in ${delay}ms...`]);
           setStats(s => ({ ...s, retries: s.retries + 1 }));
-          await sleep(delay);
+          await sleep(1500 * (attempt + 1)); // Exponential backoff
           continue;
         }
-        return data; // Return the N/A if all retries exhausted
+        return data;
       } catch (err) {
-        lastError = err;
-        if (attempt === maxRetries) throw lastError;
+        if (attempt === maxRetries) throw err;
         await sleep(1000);
       }
     }
@@ -68,150 +57,182 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
 
   const handleMcRangeSearch = async () => {
     if (!mcRangeStart || !mcRangeEnd) return;
-    setLogs(prev => [...prev, `🔍 Querying Supabase for MC range: ${mcRangeStart} - ${mcRangeEnd}...`]);
+    setLogs(prev => [...prev, `🔍 Searching Database for MC ${mcRangeStart} - ${mcRangeEnd}...`]);
     try {
       const { data, error } = await supabase.from('carriers').select('*').gte('mc_number', mcRangeStart).lte('mc_number', mcRangeEnd);
       if (error) throw error;
-      if (data) {
-        setMcRangeCarriers(data);
-        setLogs(prev => [...prev, `✅ Found ${data.length} records in range.`]);
-      }
+      setMcRangeCarriers(data || []);
+      setLogs(prev => [...prev, `✅ Loaded ${data?.length || 0} carriers from range.`]);
     } catch (err: any) {
       setLogs(prev => [...prev, `❌ DB Error: ${err.message}`]);
     }
   };
 
-  const startEnrichmentProcess = async () => {
+  const startPairedEnrichment = async () => {
     if (isProcessing) return;
     const targetCarriers = mcRangeMode ? mcRangeCarriers : carriers;
     if (targetCarriers.length === 0) return;
 
     setIsProcessing(true);
     isRunningRef.current = true;
-    setLogs(prev => [...prev, `🚀 ENGINE START: Syncing ${targetCarriers.length} records with Retry Logic...`]);
+    setLogs(prev => [...prev, `🚀 STARTING PAIRED STREAM: Processing ${targetCarriers.length} records...`]);
     
     const updated = [...targetCarriers];
-    const BATCH_SIZE = 3; // Reduced batch size for stability
 
-    // STAGE 1: INSURANCE
-    setCurrentStage('INSURANCE');
-    for (let i = 0; i < updated.length; i += BATCH_SIZE) {
+    for (let i = 0; i < updated.length; i++) {
       if (!isRunningRef.current) break;
-      const batch = updated.slice(i, i + BATCH_SIZE);
-      await Promise.all(batch.map(async (carrier, index) => {
-        const globalIdx = i + index;
-        try {
-          const { policies } = await fetchInsuranceData(carrier.dotNumber);
-          updated[globalIdx].insurancePolicies = policies;
-          await updateCarrierInsurance(carrier.dotNumber, { policies });
-          setStats(s => ({ ...s, dbSaved: s.dbSaved + 1, insFound: s.insFound + (policies.length > 0 ? 1 : 0) }));
-          setLogs(prev => [...prev, `✨ [INS] ${carrier.dotNumber}: ${policies.length} filings`]);
-        } catch (err) { setStats(s => ({ ...s, insFailed: s.insFailed + 1 })); }
-      }));
-      await sleep(500); // Stagger batches
-      setProgress(Math.round(((i + batch.length) / updated.length) * 50));
-    }
-
-    // STAGE 2: SAFETY (With Retry & Backoff)
-    setCurrentStage('SAFETY');
-    for (let i = 0; i < updated.length; i += BATCH_SIZE) {
-      if (!isRunningRef.current) break;
-      const batch = updated.slice(i, i + BATCH_SIZE);
       
-      await Promise.all(batch.map(async (carrier, index) => {
-        const globalIdx = i + index;
-        try {
-          // CALL THE RETRY WRAPPER
-          const s = await fetchSafetyWithRetry(carrier.dotNumber);
-          
-          updated[globalIdx] = { ...updated[globalIdx], safetyRating: s.rating, basicScores: s.basicScores };
-          await updateCarrierSafety(carrier.dotNumber, s);
-          
-          setStats(s => ({ ...s, dbSaved: s.dbSaved + 1, safetyFound: s.safetyFound + 1 }));
-          const maint = s.basicScores?.vehicleMaint || 0;
-          setLogs(prev => [...prev, `🛡️ [SAFE] ${carrier.dotNumber}: ${s.rating} (${maint}%)`]);
-        } catch (err) {
-          setStats(s => ({ ...s, safetyFailed: s.safetyFailed + 1 }));
-        }
-      }));
-      await sleep(800); // Wait longer between safety batches to avoid N/A triggers
-      setProgress(50 + Math.round(((i + batch.length) / updated.length) * 50));
-      onUpdateCarriers([...updated]);
+      const carrier = updated[i];
+      setLogs(prev => [...prev, `📡 [${i + 1}/${updated.length}] Querying DOT: ${carrier.dotNumber}...`]);
+
+      try {
+        // STEP 1: Execute both requests at the same time
+        const [insResult, safeResult] = await Promise.all([
+          fetchInsuranceData(carrier.dotNumber),
+          fetchSafetyWithRetry(carrier.dotNumber)
+        ]);
+
+        // STEP 2: Update Data Object
+        updated[i] = { 
+          ...updated[i], 
+          insurancePolicies: insResult.policies,
+          safetyRating: safeResult.rating,
+          basicScores: safeResult.basicScores
+        };
+
+        // STEP 3: Sync to Supabase
+        const [insSave, safeSave] = await Promise.all([
+          updateCarrierInsurance(carrier.dotNumber, { policies: insResult.policies }),
+          updateCarrierSafety(carrier.dotNumber, safeResult)
+        ]);
+
+        // STEP 4: Update Stats & UI
+        setStats(s => ({ 
+          ...s, 
+          insFound: s.insFound + (insResult.policies.length > 0 ? 1 : 0),
+          safetyFound: s.safetyFound + (safeResult.rating !== 'N/A' ? 1 : 0),
+          dbSaved: s.dbSaved + (insSave.success ? 1 : 0) + (safeSave.success ? 1 : 0)
+        }));
+
+        setLogs(prev => [...prev, `✨ INS: ${insResult.policies.length} | 🛡️ SAFE: ${safeResult.rating} (${safeResult.basicScores?.vehicleMaint || 0}%)`]);
+        
+        // Push update to the main list
+        onUpdateCarriers([...updated]);
+
+      } catch (err) {
+        setLogs(prev => [...prev, `❌ Error processing DOT ${carrier.dotNumber}`]);
+      }
+
+      // STEP 5: THE 1-SECOND DELAY (Ensures we don't get blocked)
+      setProgress(Math.round(((i + 1) / updated.length) * 100));
+      if (i < updated.length - 1) {
+        await sleep(1000); 
+      }
     }
 
     setIsProcessing(false);
     isRunningRef.current = false;
-    setCurrentStage('IDLE');
-    setLogs(prev => [...prev, `🎉 BATCH COMPLETE. Retries Used: ${stats.retries}`]);
+    setLogs(prev => [...prev, `🎉 PAIRED STREAM COMPLETE.`]);
   };
 
   return (
-    <div className="p-8 h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-100">
+    <div className="p-8 h-screen flex flex-col overflow-hidden bg-slate-950 text-slate-100 font-sans">
       <div className="flex justify-between items-center mb-8">
         <div>
-          <h1 className="text-3xl font-black tracking-tighter text-white">INTELLIGENCE ENRICHMENT</h1>
-          <p className="text-slate-500 font-medium">Retry-Enabled BASIC Safety & Insurance Extraction</p>
+          <div className="flex items-center gap-2 mb-1">
+            <Activity className="text-indigo-500 animate-pulse" size={24} />
+            <h1 className="text-3xl font-black tracking-tighter text-white uppercase">Paired Enrichment Engine</h1>
+          </div>
+          <p className="text-slate-500 font-medium ml-8">Concurrent Insurance & Safety Scrapes with 1s Staggered Delay</p>
         </div>
-        <div className="flex gap-3">
-          <button onClick={() => isProcessing ? (isRunningRef.current = false) : startEnrichmentProcess()} className={`px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all ${isProcessing ? 'bg-red-500 shadow-red-500/20' : 'bg-indigo-600 shadow-indigo-500/20'}`}>
-            {isProcessing ? <><Loader2 className="animate-spin" size={18} /> Stop</> : <><Zap size={18} /> Run Enrichment</>}
-          </button>
-        </div>
+        <button 
+          onClick={() => isProcessing ? (isRunningRef.current = false) : startPairedEnrichment()} 
+          className={`px-8 py-4 rounded-2xl font-black flex items-center gap-3 transition-all transform active:scale-95 ${
+            isProcessing ? 'bg-red-500/10 text-red-500 border border-red-500/50' : 'bg-indigo-600 text-white shadow-xl shadow-indigo-500/20'
+          }`}
+        >
+          {isProcessing ? <><Loader2 className="animate-spin" size={20} /> Terminate</> : <><Zap size={20} /> Start Paired Stream</>}
+        </button>
       </div>
 
       <div className="grid grid-cols-12 gap-6 flex-1 min-h-0">
         <div className="col-span-12 lg:col-span-4 space-y-6 overflow-y-auto pr-2 custom-scrollbar">
           
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-[2rem]">
-             <div className="flex items-center justify-between mb-6 text-xs font-black text-slate-500 uppercase tracking-widest">
-               <span className="flex items-center gap-2"><Database size={14} className="text-indigo-400" /> DB Range</span>
-               <button onClick={() => setMcRangeMode(!mcRangeMode)} className={`px-3 py-1 rounded-lg ${mcRangeMode ? 'bg-indigo-600' : 'bg-slate-800'}`}>{mcRangeMode ? 'ON' : 'OFF'}</button>
+          {/* Range Controls */}
+          <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-[2rem] backdrop-blur-sm">
+             <div className="flex items-center justify-between mb-6">
+                <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+                  <Database size={14} className="text-indigo-400" /> Database Range
+                </span>
+                <button onClick={() => setMcRangeMode(!mcRangeMode)} className={`px-4 py-1.5 rounded-full text-[10px] font-black transition-colors ${mcRangeMode ? 'bg-indigo-600 text-white' : 'bg-slate-800 text-slate-500'}`}>
+                  {mcRangeMode ? 'ACTIVE' : 'OFF'}
+                </button>
              </div>
              {mcRangeMode && (
-               <div className="grid grid-cols-2 gap-3 mb-3">
-                  <input type="text" value={mcRangeStart} onChange={(e) => setMcRangeStart(e.target.value)} placeholder="Start MC" className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-sm outline-none" />
-                  <input type="text" value={mcRangeEnd} onChange={(e) => setMcRangeEnd(e.target.value)} placeholder="End MC" className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-sm outline-none" />
-                  <button onClick={handleMcRangeSearch} className="col-span-2 bg-slate-800 hover:bg-slate-700 py-2 rounded-xl text-xs font-bold">Load Records</button>
+               <div className="space-y-3 animate-in slide-in-from-top-2 duration-300">
+                  <div className="flex gap-2">
+                    <input type="text" value={mcRangeStart} onChange={(e) => setMcRangeStart(e.target.value)} placeholder="Start MC" className="w-1/2 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-sm outline-none focus:border-indigo-500" />
+                    <input type="text" value={mcRangeEnd} onChange={(e) => setMcRangeEnd(e.target.value)} placeholder="End MC" className="w-1/2 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-sm outline-none focus:border-indigo-500" />
+                  </div>
+                  <button onClick={handleMcRangeSearch} className="w-full bg-slate-800 hover:bg-slate-700 py-3 rounded-xl text-xs font-black uppercase tracking-tighter transition-all">Load Carriers</button>
                </div>
              )}
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 p-6 rounded-[2rem] space-y-4">
+          {/* Live Monitor */}
+          <div className="bg-slate-900/50 border border-slate-800 p-6 rounded-[2rem] space-y-4">
             <div className="grid grid-cols-2 gap-4">
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800/50">
-                <span className="text-[10px] text-slate-500 font-black uppercase block mb-1">Insurance</span>
-                <span className="text-2xl font-black text-indigo-400">{stats.insFound}</span>
+              <div className="bg-slate-950 p-5 rounded-3xl border border-slate-800/50">
+                <span className="text-[10px] text-slate-500 font-black uppercase block mb-2">Insurance</span>
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="text-indigo-400" size={16} />
+                  <span className="text-2xl font-black text-white">{stats.insFound}</span>
+                </div>
               </div>
-              <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800/50">
-                <span className="text-[10px] text-slate-500 font-black uppercase block mb-1">Retries</span>
-                <span className="text-2xl font-black text-amber-400">{stats.retries}</span>
+              <div className="bg-slate-950 p-5 rounded-3xl border border-slate-800/50">
+                <span className="text-[10px] text-slate-500 font-black uppercase block mb-2">Retries</span>
+                <div className="flex items-center gap-2">
+                  <RotateCcw className="text-amber-400" size={16} />
+                  <span className="text-2xl font-black text-white">{stats.retries}</span>
+                </div>
               </div>
             </div>
-            <div className="bg-indigo-500/5 border border-indigo-500/20 p-4 rounded-2xl flex justify-between items-center">
+            <div className="bg-indigo-500/10 border border-indigo-500/20 p-5 rounded-3xl flex justify-between items-center">
               <div>
-                <span className="text-[10px] text-indigo-400 font-black uppercase block">DB Syncs</span>
-                <span className="text-2xl font-black text-white">{stats.dbSaved}</span>
+                <span className="text-[10px] text-indigo-400 font-black uppercase block mb-1">Total DB Updates</span>
+                <span className="text-3xl font-black text-white">{stats.dbSaved}</span>
               </div>
-              <CheckCircle2 size={24} className="text-indigo-400" />
+              <div className="h-12 w-12 rounded-full border-4 border-indigo-500/30 border-t-indigo-500 animate-spin" style={{ animationDuration: '3s' }}></div>
             </div>
-            <div className="pt-2">
-              <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
-                <div className="bg-indigo-500 h-full transition-all duration-500" style={{ width: `${progress}%` }}></div>
+            <div className="px-1">
+              <div className="flex justify-between text-[10px] mb-2 font-black text-slate-500 uppercase">
+                <span>Progress</span>
+                <span>{progress}%</span>
+              </div>
+              <div className="w-full bg-slate-950 rounded-full h-2 overflow-hidden border border-slate-800">
+                <div className="bg-gradient-to-r from-indigo-600 to-indigo-400 h-full transition-all duration-500" style={{ width: `${progress}%` }}></div>
               </div>
             </div>
           </div>
         </div>
 
-        <div className="col-span-12 lg:col-span-8 flex flex-col bg-slate-950 rounded-[2rem] border border-slate-800 overflow-hidden relative">
-          <div className="bg-slate-900/50 p-4 border-b border-slate-800 flex justify-between items-center px-8 text-[10px] font-black text-slate-500 uppercase tracking-widest">
-            <span className="flex items-center gap-2"><ClipboardList size={14} /> Pipeline Log</span>
-            <div className="flex items-center gap-2"><RotateCcw size={12} /> Auto-Retry V2.1</div>
+        {/* Console Panel */}
+        <div className="col-span-12 lg:col-span-8 flex flex-col bg-slate-950 rounded-[2rem] border border-slate-800 overflow-hidden shadow-2xl relative">
+          <div className="bg-slate-900/80 p-5 border-b border-slate-800 flex justify-between items-center px-8">
+            <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-2">
+              <ClipboardList size={14} /> Intelligence Pipeline Console
+            </span>
+            <div className="flex items-center gap-4 text-[10px] font-mono text-slate-600">
+              <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-indigo-500"></div> Concurrent</span>
+              <span className="flex items-center gap-1"><div className="w-1.5 h-1.5 rounded-full bg-emerald-500"></div> Staggered</span>
+            </div>
           </div>
-          <div className="flex-1 overflow-y-auto p-8 font-mono text-[11px] space-y-2 custom-scrollbar">
+          
+          <div className="flex-1 overflow-y-auto p-8 font-mono text-[11px] space-y-2 custom-scrollbar bg-[radial-gradient(circle_at_top_right,rgba(30,41,59,0.2),transparent)]">
             {logs.map((log, i) => (
-              <div key={i} className={`flex gap-4 p-2 rounded-lg ${log.includes('🔄') ? 'bg-amber-500/5 text-amber-400 border border-amber-500/10' : 'hover:bg-slate-900/50 text-slate-400'}`}>
-                <span className="opacity-20 shrink-0">[{new Date().toLocaleTimeString()}]</span>
-                <span>{log}</span>
+              <div key={i} className={`group flex gap-4 p-2.5 rounded-xl border border-transparent transition-all hover:bg-slate-900/50 hover:border-slate-800/50 ${log.includes('🔄') ? 'text-amber-400 font-bold' : 'text-slate-400'}`}>
+                <span className="opacity-20 shrink-0 font-bold group-hover:opacity-40">[{new Date().toLocaleTimeString()}]</span>
+                <span className={log.includes('✨') || log.includes('🛡️') ? 'text-slate-200' : ''}>{log}</span>
               </div>
             ))}
             <div ref={logsEndRef} />
