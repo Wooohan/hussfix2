@@ -35,7 +35,7 @@ export const FMCSARegister: React.FC = () => {
     'MISCELLANEOUS'
   ];
 
-  // Logic remains untouched
+  // LOGIC PRESERVED
   function getTodayDate(): string {
     const today = new Date();
     return today.toISOString().split('T')[0];
@@ -85,7 +85,7 @@ export const FMCSARegister: React.FC = () => {
       } else {
         setRegisterData([]);
         setLastUpdated('');
-        setError(`No data found for ${selectedDate}. Try "Fetch Live".`);
+        setError(`No data found for ${selectedDate}.`);
       }
     } catch (err) {
       setError('Error searching database.');
@@ -101,16 +101,13 @@ export const FMCSARegister: React.FC = () => {
       const formattedDate = formatDateForAPI(selectedDate);
       const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
       const apiUrl = isLocal ? 'http://localhost:3001/api/fmcsa-register' : '/api/fmcsa-register';
-      
       const response = await fetch(apiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ date: formattedDate })
       });
-      
-      if (!response.ok) throw new Error(`Server returned ${response.status}`);
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
       const data = await response.json();
-      
       if (data.success && data.entries && data.entries.length > 0) {
         setRegisterData(data.entries);
         setLastUpdated(`Live: ${new Date().toLocaleTimeString()} (${data.count} records)`);
@@ -120,7 +117,7 @@ export const FMCSARegister: React.FC = () => {
         throw new Error('No entries found on FMCSA for this date.');
       }
     } catch (err: any) {
-      setError(err.message || 'Unable to fetch live register data.');
+      setError(err.message || 'Unable to fetch live data.');
     } finally {
       setIsLoading(false);
     }
@@ -160,183 +157,163 @@ export const FMCSARegister: React.FC = () => {
       'DISMISSAL': 'text-amber-400 border-amber-500/30 bg-amber-500/10',
       'WITHDRAWAL': 'text-orange-400 border-orange-500/30 bg-orange-500/10',
       'REVOCATION': 'text-rose-400 border-rose-500/30 bg-rose-500/10',
-      'MISCELLANEOUS': 'text-slate-400 border-slate-500/30 bg-slate-500/10',
     };
     return colors[category] || 'text-slate-400 border-slate-500/30 bg-slate-500/10';
   };
 
   return (
-    <div className="p-6 h-screen flex flex-col bg-[#020617] text-slate-200 font-sans selection:bg-indigo-500/30">
-      {/* Top Navigation Bar */}
-      <header className="flex justify-between items-center mb-8">
+    <div className="p-6 h-screen flex flex-col overflow-hidden bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-200 font-sans">
+      
+      {/* HEADER SECTION */}
+      <div className="flex justify-between items-center mb-8 shrink-0">
         <div className="flex items-center gap-4">
-          <div className="relative">
-            <div className="absolute -inset-1 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-xl blur opacity-25"></div>
-            <div className="relative p-3 bg-slate-900 rounded-xl border border-slate-700/50">
-              <FileText className="text-indigo-400" size={28} />
-            </div>
+          <div className="p-3 bg-indigo-600/20 border border-indigo-500/30 rounded-2xl shadow-lg shadow-indigo-500/10">
+            <FileText className="text-indigo-400" size={24} />
           </div>
           <div>
-            <h1 className="text-2xl font-extrabold tracking-tight text-white">FMCSA <span className="text-indigo-400">Register</span></h1>
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500 uppercase tracking-widest">
-              <Clock size={12} />
-              <span>Real-time Compliance Monitor</span>
-            </div>
+            <h1 className="text-2xl font-bold tracking-tight text-white">FMCSA <span className="text-indigo-400">Register</span></h1>
+            <p className="text-slate-500 text-xs font-medium uppercase tracking-wider">Operational Dashboard</p>
           </div>
         </div>
 
         <div className="flex items-center gap-4">
-          <div className="flex flex-col items-end mr-2">
-            {saveStatus === 'saving' && <span className="text-[10px] text-indigo-400 animate-pulse flex items-center gap-1 font-bold"><Database size={10}/> UPLOADING</span>}
-            {saveStatus === 'saved' && <span className="text-[10px] text-emerald-400 flex items-center gap-1 font-bold"><CheckCircle2 size={10}/> CLOUD SYNCED</span>}
+          <div className="hidden sm:flex flex-col items-end mr-2">
+            {saveStatus === 'saving' && <span className="text-[10px] text-indigo-400 animate-pulse font-bold flex items-center gap-1"><Database size={10}/> SYNCING</span>}
+            {saveStatus === 'saved' && <span className="text-[10px] text-emerald-400 font-bold flex items-center gap-1"><CheckCircle2 size={10}/> SECURE</span>}
           </div>
           <button
             onClick={fetchRegisterData}
             disabled={isLoading}
-            className="group relative flex items-center gap-2 px-6 py-3 bg-white text-slate-950 rounded-full text-sm font-bold transition-all hover:bg-indigo-50 disabled:opacity-50 shadow-[0_0_20px_rgba(255,255,255,0.1)]"
+            className="flex items-center gap-2 px-5 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-sm font-bold transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50"
           >
-            <RefreshCw size={16} className={isLoading ? 'animate-spin' : 'group-hover:rotate-180 transition-transform duration-500'} />
-            {isLoading ? 'SCRAPING...' : 'FETCH LIVE'}
+            <RefreshCw size={16} className={isLoading ? 'animate-spin' : ''} />
+            {isLoading ? 'FETCHING...' : 'FETCH LIVE'}
           </button>
         </div>
-      </header>
+      </div>
 
-      {/* Stats Dashboard */}
+      {/* STATS ROW */}
       {registerData.length > 0 && (
-        <div className="grid grid-cols-4 gap-4 mb-8">
+        <div className="grid grid-cols-4 gap-4 mb-6 shrink-0">
           {[
-            { label: 'Total Records', val: registerData.length, icon: TrendingUp, color: 'text-indigo-400', bg: 'bg-indigo-400/5' },
-            { label: 'Active Categories', val: Object.keys(categoryStats).length, icon: BarChart3, color: 'text-purple-400', bg: 'bg-purple-400/5' },
-            { label: 'Primary Focus', val: Object.entries(categoryStats).sort(([,a], [,b]) => b - a)[0]?.[0].split(' ')[0] || 'N/A', icon: Filter, color: 'text-emerald-400', bg: 'bg-emerald-400/5', small: true },
-            { label: 'Results Found', val: filteredData.length, icon: Search, color: 'text-amber-400', bg: 'bg-amber-400/5' },
-          ].map((stat, i) => (
-            <div key={i} className="group relative overflow-hidden bg-slate-900/40 border border-slate-800 rounded-2xl p-4 transition-all hover:border-slate-700 hover:bg-slate-900/60">
-              <div className={`${stat.bg} ${stat.color} absolute -right-4 -top-4 p-8 rounded-full opacity-10 group-hover:scale-110 transition-transform`}></div>
-              <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest mb-1">{stat.label}</p>
-              <div className="flex items-end justify-between">
-                <p className={`${stat.small ? 'text-lg' : 'text-2xl'} font-bold text-white tracking-tight`}>{stat.val}</p>
-                <stat.icon className={`${stat.color} opacity-40`} size={20} />
+            { label: 'Records', val: registerData.length, icon: TrendingUp, color: 'text-indigo-400' },
+            { label: 'Categories', val: Object.keys(categoryStats).length, icon: BarChart3, color: 'text-purple-400' },
+            { label: 'Active', val: filteredData.length, icon: Search, color: 'text-emerald-400' },
+            { label: 'Top Type', val: Object.entries(categoryStats).sort(([,a], [,b]) => b - a)[0]?.[0].split(' ')[0] || 'N/A', icon: Filter, color: 'text-amber-400' },
+          ].map((s, i) => (
+            <div key={i} className="bg-slate-900/40 border border-slate-800/60 rounded-2xl p-4 backdrop-blur-sm transition-transform hover:scale-[1.02]">
+              <div className="flex justify-between items-start">
+                <div>
+                  <p className="text-slate-500 text-[10px] uppercase font-bold tracking-widest">{s.label}</p>
+                  <p className="text-xl font-bold text-white mt-1">{s.val}</p>
+                </div>
+                <s.icon className={`${s.color} opacity-40`} size={20} />
               </div>
             </div>
           ))}
         </div>
       )}
 
-      {/* Filtering Section */}
-      <div className="bg-slate-900/30 border border-slate-800/60 rounded-3xl p-2 mb-8 backdrop-blur-md">
-        <div className="grid grid-cols-1 md:grid-cols-10 gap-2">
-          <div className="md:col-span-2 relative group">
-            <Calendar className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-400" size={16} />
+      {/* SEARCH/FILTER BAR */}
+      <div className="bg-slate-900/60 border border-slate-800/60 rounded-2xl p-3 mb-6 shrink-0 shadow-xl">
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+          <div className="relative">
+            <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
             <input
               type="date"
               value={selectedDate}
               onChange={(e) => setSelectedDate(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-slate-950/50 border border-transparent rounded-2xl text-sm focus:outline-none focus:border-indigo-500/50 text-white transition-all"
+              className="w-full pl-9 pr-3 py-2 bg-slate-950/50 border border-slate-800 rounded-xl text-xs focus:outline-none focus:border-indigo-500/50 text-white transition-all"
             />
           </div>
 
-          <div className="md:col-span-3 relative group">
-            <Filter className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-400" size={16} />
+          <div className="relative">
+            <Filter className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-slate-950/50 border border-transparent rounded-2xl text-sm appearance-none focus:outline-none focus:border-indigo-500/50 text-white transition-all"
+              className="w-full pl-9 pr-3 py-2 bg-slate-950/50 border border-slate-800 rounded-xl text-xs appearance-none focus:outline-none focus:border-indigo-500/50 text-white"
             >
               <option value="all">All Categories</option>
               {categories.map(cat => <option key={cat} value={cat}>{cat}</option>)}
             </select>
-            <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" size={14} />
           </div>
 
-          <div className="md:col-span-3 relative group">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 group-focus-within:text-indigo-400" size={16} />
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" size={14} />
             <input
               type="text"
-              placeholder="Search DOT # or Title..."
+              placeholder="Filter by ID or Title..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-11 pr-4 py-3 bg-slate-950/50 border border-transparent rounded-2xl text-sm focus:outline-none focus:border-indigo-500/50 text-white transition-all placeholder-slate-600"
+              className="w-full pl-9 pr-3 py-2 bg-slate-950/50 border border-slate-800 rounded-xl text-xs focus:outline-none focus:border-indigo-500/50 text-white placeholder-slate-600"
             />
           </div>
 
-          <div className="md:col-span-2">
-            <button
-              onClick={handleSearch}
-              disabled={isSearching}
-              className="w-full h-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-2xl text-sm font-bold transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50"
-            >
-              {isSearching ? <RefreshCw size={16} className="animate-spin" /> : <ArrowRight size={16} />}
-              SEARCH DB
-            </button>
-          </div>
+          <button
+            onClick={handleSearch}
+            disabled={isSearching}
+            className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition-all disabled:opacity-50"
+          >
+            {isSearching ? <RefreshCw size={14} className="animate-spin" /> : <Search size={14} />}
+            SEARCH DATABASE
+          </button>
         </div>
       </div>
 
-      {/* Messages */}
-      {error && (
-        <div className="mb-6 p-4 bg-rose-500/10 border border-rose-500/20 rounded-2xl text-rose-400 text-sm flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
-          <AlertCircle size={18} /> {error}
-        </div>
-      )}
-      {lastUpdated && !error && (
-        <div className="mb-6 p-4 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl text-emerald-400 text-sm flex items-center gap-3 animate-in fade-in slide-in-from-top-2">
-          <CheckCircle2 size={18} /> {lastUpdated}
+      {/* NOTIFICATIONS */}
+      {(error || lastUpdated) && (
+        <div className={`mb-4 p-3 rounded-xl border text-xs flex items-center gap-2 shrink-0 animate-in fade-in slide-in-from-top-1 ${error ? 'bg-rose-500/10 border-rose-500/20 text-rose-400' : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400'}`}>
+          {error ? <AlertCircle size={14} /> : <CheckCircle2 size={14} />}
+          {error || lastUpdated}
         </div>
       )}
 
-      {/* Table Section */}
-      <div className="flex-1 overflow-hidden rounded-3xl border border-slate-800 bg-slate-900/20 backdrop-blur-sm shadow-2xl">
+      {/* DATA TABLE */}
+      <div className="flex-1 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/20 backdrop-blur-md shadow-2xl">
         {filteredData.length > 0 ? (
-          <div className="h-full overflow-y-auto scrollbar-thin scrollbar-thumb-slate-700">
+          <div className="h-full overflow-y-auto">
             <table className="w-full text-sm border-separate border-spacing-0">
               <thead className="sticky top-0 z-10">
-                <tr className="bg-slate-900/95 backdrop-blur-md">
-                  <th className="px-6 py-5 text-left text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800">Number</th>
-                  <th className="px-6 py-5 text-left text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800">Title</th>
-                  <th className="px-6 py-5 text-left text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800">Category</th>
-                  <th className="px-6 py-5 text-left text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800 text-center">Decided</th>
+                <tr className="bg-slate-900/95 backdrop-blur-md shadow-sm">
+                  <th className="px-6 py-4 text-left text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800">MC Number</th>
+                  <th className="px-6 py-4 text-left text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800">Entity Title</th>
+                  <th className="px-6 py-4 text-left text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800">Classification</th>
+                  <th className="px-6 py-4 text-center text-[10px] uppercase tracking-widest font-bold text-slate-500 border-b border-slate-800">Date Decided</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-800/50">
+              <tbody className="divide-y divide-slate-800/40">
                 {filteredData.map((entry, idx) => (
-                  <tr key={idx} className="group hover:bg-indigo-500/[0.03] transition-colors">
+                  <tr key={idx} className="group hover:bg-white/[0.02] transition-colors">
+                    <td className="px-6 py-4 font-mono text-indigo-400 font-medium">{entry.number}</td>
+                    <td className="px-6 py-4 text-slate-300 font-medium">{entry.title}</td>
                     <td className="px-6 py-4">
-                      <span className="font-mono text-indigo-400 font-medium group-hover:text-indigo-300 transition-colors">
-                        {entry.number}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-slate-300 font-medium max-w-md truncate">{entry.title}</td>
-                    <td className="px-6 py-4">
-                      <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold border transition-all group-hover:scale-105 ${getCategoryColor(entry.category)}`}>
+                      <span className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-bold border ${getCategoryColor(entry.category)}`}>
                         {entry.category}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-slate-500 text-xs text-center font-mono">
-                      {entry.decided}
-                    </td>
+                    <td className="px-6 py-4 text-slate-500 text-xs text-center font-mono">{entry.decided}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <div className="h-full flex flex-col items-center justify-center space-y-4 opacity-40">
-            <div className="p-6 bg-slate-800/50 rounded-full">
-              <Database size={48} className="text-slate-600" />
-            </div>
-            <div className="text-center">
-              <p className="text-lg font-bold text-slate-400">System Ready</p>
-              <p className="text-sm text-slate-500">Run a search or fetch live data to begin monitor.</p>
-            </div>
+          <div className="h-full flex flex-col items-center justify-center space-y-3 opacity-30">
+            <Database size={40} className="text-slate-500" />
+            <p className="text-sm font-bold tracking-widest uppercase">No Records Found</p>
           </div>
         )}
       </div>
-      
-      {/* Footer Branding */}
-      <footer className="mt-4 flex justify-between items-center text-[10px] font-bold text-slate-600 uppercase tracking-[0.2em]">
-        <span>Precision Logistics Monitor v2.0</span>
-        <span className="flex items-center gap-1"><Clock size={10} /> Status: Operational</span>
-      </footer>
+
+      {/* FOOTER */}
+      <div className="mt-4 flex justify-between items-center shrink-0">
+        <p className="text-[10px] font-bold text-slate-600 uppercase tracking-widest">v2.1 Stable</p>
+        <div className="flex gap-4 text-[10px] font-bold text-slate-600 uppercase tracking-widest">
+           <span>DB Status: Connected</span>
+           <span>API: Ready</span>
+        </div>
+      </div>
     </div>
   );
 };
