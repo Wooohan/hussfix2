@@ -92,7 +92,7 @@ export const InsuranceScraper: React.FC<InsuranceScraperProps> = ({ carriers, on
           fetchSafetyWithRetry(carrier.dotNumber)
         ]);
 
-        // STEP 2: Update Data Object
+        // STEP 2: Update Data Object.
         updated[i] = { 
           ...updated[i], 
           insurancePolicies: insResult.policies,
